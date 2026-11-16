@@ -1,0 +1,138 @@
+name: Render video
+
+on:
+  push:
+    branches: [main]
+    paths: ['inbox/**']
+  workflow_dispatch:
+    inputs:
+      episode:
+        description: 'Kode episode yang mau dirender ulang (contoh: 014)'
+        required: true
+
+permissions:
+  contents: write
+
+concurrency:
+  group: render
+  cancel-in-progress: false
+
+jobs:
+  render:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      TG_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+      TG_CHAT: ${{ secrets.TELEGRAM_CHAT_ID }}
+      GH_TOKEN: ${{ github.token }}
+      RUN_NO: ${{ github.run_number }}
+      RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Deteksi episode
+        id: detect
+        env:
+          EP_INPUT: ${{ github.event.inputs.episode }}
+          BEFORE: ${{ github.event.before }}
+          AFTER: ${{ github.sha }}
+        run: python3 src/detect.py >> "$GITHUB_OUTPUT"
+
+      - name: Tidak ada episode untuk dirender
+        if: steps.detect.outputs.episodes == ''
+        run: echo "Tidak ada file episode baru di inbox/. Selesai."
+
+      - uses: actions/setup-node@v4
+        if: steps.detect.outputs.episodes != ''
+        with:
+          node-version: 20
+
+      - uses: actions/setup-python@v5
+        if: steps.detect.outputs.episodes != ''
+        with:
+          python-version: '3.11'
+          cache: pip
+
+      - name: Pasang dependensi
+        if: steps.detect.outputs.episodes != ''
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq fonts-dejavu-core fonts-liberation
+          command -v ffmpeg >/dev/null || sudo apt-get install -y -qq ffmpeg
+          ffmpeg -version | head -1
+          npm install --no-audit --no-fund
+          python -m pip install -r requirements.txt
+
+      - uses: actions/cache@v4
+        if: steps.detect.outputs.episodes != ''
+        with:
+          path: ~/.cache/huggingface
+          key: whisper-base-v1
+
+      - name: Uji cepat pustaka scene
+        if: steps.detect.outputs.episodes != ''
+        run: node tests/smoke.js
+
+      - name: Render dan QA
+        id: render
+        if: steps.detect.outputs.episodes != ''
+        env:
+          EPISODES: ${{ steps.detect.outputs.episodes }}
+        run: |
+          status=0
+          for ep in $EPISODES; do
+            python src/run.py "$ep" || status=1
+          done
+          exit $status
+
+      - name: Simpan laporan QA
+        if: always() && steps.detect.outputs.episodes != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: laporan-qa
+          path: |
+            out/*/qa_report.json
+            out/*/plan.json
+          retention-days: 7
+          if-no-files-found: ignore
+
+      - name: Terbitkan ke Releases
+        if: always() && steps.detect.outputs.episodes != ''
+        env:
+          EPISODES: ${{ steps.detect.outputs.episodes }}
+        run: |
+          for ep in $EPISODES; do
+            f="out/$ep/$ep.mp4"
+            if [ -f "$f" ] && [ -f "out/$ep/upload.txt" ]; then
+              gh release create "ep-$ep-$RUN_NO" "$f" "out/$ep/cover.jpg" "out/$ep/upload.txt" \
+                --title "Episode $ep" --notes-file "out/$ep/upload.txt"
+            else
+              echo "Episode $ep tidak punya video lolos QA, dilewati."
+            fi
+          done
+
+      - name: Kirim ke Telegram (opsional)
+        if: always() && steps.detect.outputs.episodes != ''
+        env:
+          EPISODES: ${{ steps.detect.outputs.episodes }}
+        run: |
+          if [ -z "$TG_TOKEN" ] || [ -z "$TG_CHAT" ]; then echo "Telegram belum diatur, dilewati."; exit 0; fi
+          api="https://api.telegram.org/bot${TG_TOKEN}"
+          for ep in $EPISODES; do
+            f="out/$ep/$ep.mp4"
+            if [ -f "$f" ]; then
+              cap="Episode $ep selesai. $(head -c 800 out/$ep/upload.txt)"
+              if [ "$(stat -c%s "$f")" -le 49000000 ]; then
+                curl -sS -f -X POST "$api/sendVideo" -F chat_id="$TG_CHAT" -F supports_streaming=true \
+                  --form-string "caption=$cap" -F video=@"$f" -o /dev/null || echo "::warning::Gagal kirim video ke Telegram"
+              else
+                curl -sS -f -X POST "$api/sendMessage" -d chat_id="$TG_CHAT" \
+                  --data-urlencode "text=Episode $ep selesai tapi lebih dari 49 MB. Ambil di Releases: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/releases" -o /dev/null || true
+              fi
+            else
+              curl -sS -f -X POST "$api/sendMessage" -d chat_id="$TG_CHAT" \
+                --data-urlencode "text=Episode $ep GAGAL. Detail: $RUN_URL" -o /dev/null || true
+            fi
+          done
