@@ -1,0 +1,16 @@
+{
+  "title": "How does a hydraulic system really work?",
+  "scenes": [
+    { "type": "hook_title", "params": { "text": "HOW DOES A HYDRAULIC SYSTEM WORK?", "sub": "It all starts with one pump" } },
+    { "type": "flow_chain", "params": { "title": "Hydraulic Flow", "nodes": [
+      { "label": "Engine", "kind": "engine" },
+      { "label": "Hydraulic Pump", "kind": "pump" },
+      { "label": "Control Valve", "kind": "valve" },
+      { "label": "Cylinder", "kind": "cylinder" } ] } },
+    { "type": "piston", "params": { "title": "Inside the Cylinder" } },
+    { "type": "gears", "params": { "title": "Gears Trade Speed for Force", "count": 3 } },
+    { "type": "pulleys", "params": { "title": "CVT: Changing Ratio Smoothly" } },
+    { "type": "wheel_brake", "params": { "abs": true } },
+    { "type": "pullback", "params": { "title": "NOW YOU KNOW", "sub": "Follow for more engineering" } }
+  ]
+}
